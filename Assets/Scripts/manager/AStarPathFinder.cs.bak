@@ -1,0 +1,1051 @@
+﻿using Cmd;
+using sw.anim;
+using sw.game.model;
+using sw.util;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using UnityEngine;
+
+namespace sw.game
+{
+    public class AStarPathFinder:IPathFinder
+    {
+        private ByteArray _gridData;
+		private Node _root;
+		private Dictionary<int,Node> _nodes;
+		private int _colNum;
+		private int _rowNum;
+		private const float diagCost = 1.4142135623731f;
+		private const float straightCost = 1.0f;
+        delegate float DistFun(Node node1,Node node2);
+		DistFun heuristic;
+		public int count;
+		private uint _findVer = 0;
+		List<Node> searchNodes;
+		private uint _version;
+
+		public  uint version
+        {
+            get {return _version;}
+        }
+		 
+
+ 
+		
+		private const int  MAX_FLOYD = 3;
+		
+		private const int MAX_STEP = 50;
+		
+		public   int  mapWidth
+        {
+            get
+		        {
+			        return _colNum;
+		        }
+        }
+		public   int  mapHeight
+        {
+            get
+		{
+			return _rowNum;
+		}
+        }
+		
+		public  AStarPathFinder()
+		{
+			_nodes = new Dictionary<int,Node>();
+			this.heuristic = this.manhattanHeuristic;
+			 
+//			this.heuristic = this.diagonalHeuristic;
+		}
+		public  Boolean fillData(ByteArray data)
+		{
+			if(data == null)
+			{
+				_gridData = null;
+				_nodes = null;
+			}
+			else
+			{
+				 
+				uint magic = data.readUnsignedInt();
+				_version = data.readUnsignedInt();
+				_colNum = data.readInt();
+				_rowNum = data.readInt();
+				if (data.size() < _colNum * _rowNum * 2)
+					return false;
+                byte[] newBuff = new byte[data.size()];
+                Array.Copy(data.getBuffer(),data.position,newBuff,0,data.size());
+				_gridData = new ByteArray(newBuff);
+				 
+				_nodes = new Dictionary<int,Node>();
+			}
+			
+			return true;
+		}
+		public  int getWalkLevel(int x,int  y)
+		{
+			if (x < 0 || y < 0 || x>=_colNum|| y>=_rowNum)
+				return -1;
+			
+			if(null == _gridData)
+				return -1;
+			int i = (x << 8) + y;
+			if (_nodes.ContainsKey(i))
+				return _nodes[i].walkLevel;
+			else
+			{
+				_gridData.position = (y * _colNum + x) * 2; 
+				int flag = _gridData.readUnsignedByte();		
+				return flag & 0x7f;
+			}
+		}
+		public  int getStatus(int x,int  y)
+		{
+			int i = (x << 8) + y;
+			if (_nodes[i] != null&& _nodes[i].version ==(int) _findVer)
+				return _nodes[i].status;
+			else
+			{
+				return 0;
+			}
+		}
+		private  Node getNode(int x,int  y)
+		{
+			if (x < 0 || y < 0 || x>=_colNum|| y>=_rowNum)
+				return null;
+			int i = (x << 8) + y;
+			if (!_nodes.ContainsKey(i))				
+			{
+				_gridData.position = (y * _colNum + x) * 2; 
+				int flag = _gridData.readUnsignedByte();		
+			 
+				_nodes[i] = new Node(x,y,flag & 0x7f,(flag&0x80)>0);
+			}
+			return _nodes[i];
+		}
+		private  Boolean contain(Node node,List<Node>   arr)
+		{
+			int l = arr.Count;
+			for ( int i = 0; i < l; ++i) {
+				if ( arr[i] == node ) return true;
+			}
+			
+			return false;	
+		}
+		private  void addNode(Node node,List<Node>  arr)
+		{
+			if (arr.Count == 0)
+			{
+				arr.Add(node);
+				return;
+			}
+			int high = arr.Count-1;
+			int low = 0;
+			int mid ;
+			int len = arr.Count;
+			if (node.f < arr[high].f)
+			{
+                arr.Add(node);
+				
+				return;
+			}
+			if (node.f > arr[0].f)
+			{
+				high = 0;
+			}
+			else
+			{
+				while (high-low>1)
+				{
+					mid = (high + low) / 2;
+					if (arr[mid].f < node.f)
+						high  = mid;
+					else
+						low= mid;
+					
+				}
+				
+				//trace("high:" + high);
+				if (arr[high].f > node.f)			
+					high++;
+			}
+            arr.Insert(high, node);
+            //while (len>high)
+            //{
+            //    arr[len] = arr[len - 1];
+            //    len--;
+            //}
+			
+            //arr[high] = node;
+			 
+		}
+		private  void checkNode(Node curNode,Node nextNode,Node  destNode,List<Node> open,int walkLevel,float cost)
+		{
+			count++;
+		
+//			if(searchNodes && nextNode)
+//				searchNodes.push({x:nextNode.x,y:nextNode.y,status:nextNode.status});
+			if (nextNode == null || nextNode.walkLevel >= walkLevel)
+				return;
+			//check neighbor
+			
+			if (nextNode.x != curNode.x && nextNode.y != curNode.y)
+			{
+				if (getNode(curNode.x, nextNode.y).walkLevel >= walkLevel&&getNode(nextNode.x,curNode.y).walkLevel >= walkLevel)
+					return;
+				 
+			}
+			float g = curNode.g + cost;
+			float h = this.heuristic(nextNode, destNode);
+			 
+			float f = g + h;
+			int i = (nextNode.x << 8) + nextNode.y;
+			 
+			if(nextNode.version==this._findVer && nextNode.status>0 )
+			{
+				if (nextNode.f > f)
+				{
+					//trace("adjust before:" + nextNode);
+					nextNode.f = f;
+					nextNode.g = g;
+					nextNode.h = h;
+					nextNode.parent = curNode;
+					//trace("adjust after:" + nextNode+",parent:"+curNode);
+				}
+			}
+			else
+			{
+				nextNode.f = f;
+				nextNode.g = g;
+				nextNode.h = h;
+				nextNode.parent = curNode;
+				addNode(nextNode, open);
+			 
+				nextNode.status = 1;
+				nextNode.version =(int) _findVer;
+				//trace("new node:" + nextNode);
+			}
+		}
+		private  Node getMinNode(List<Node> nodes)
+		{
+			float minVal = float.MaxValue;
+			Node minNode = null;
+			int minIndex = -1;
+            for(int i=0;i<nodes.Count;i++)
+            {
+                if (nodes[i].f < minVal) {
+					minNode = nodes[i];
+					minVal = nodes[i].f;
+					minIndex = i;
+				}
+            }
+			 
+			
+			int len = nodes.Count;
+			for ( int i = minIndex; i < len-1; i++)
+			{
+				nodes[i] = nodes[i + 1];
+			}
+			nodes.RemoveAt(0);
+			
+			return minNode;
+			/*
+			nodes[minIndex] = null;
+			return minNode;*/
+		}
+		private  Node getWalkableNode(int x,int y,int radius,int walkLevel)
+		{
+			Node node;
+			int i;
+			for( i = -radius;i<=radius;i++)
+			{
+				node = getNode(x+i, y-radius);
+				if (node != null&&node.walkLevel < walkLevel)
+				{
+					return node;
+				}
+			}
+			for(i = -radius;i<=radius;i++)			 
+			{
+				node = getNode(x+i, y+radius);
+				if (node != null&&node.walkLevel < walkLevel)
+				{
+					return node;
+				}
+			}
+			for(i = -radius;i<=radius;i++)			 
+			{
+				node = getNode(x-radius, y+i);
+				if (node != null&&node.walkLevel < walkLevel)
+				{
+					return node;
+				}
+			}
+			for(i = -radius;i<=radius;i++)		 
+			{
+				node = getNode(x+radius, y+i);
+				if (node != null&&node.walkLevel < walkLevel)
+				{
+					return node;
+				}
+			}
+			return null;
+		}
+        public IntPoint findByDir(int fromX, int fromY, Vector2 dir, int walkLevel, int minDist = 1, int maxDis = 10)
+        {
+            int xdir = Math.Sign(dir.x);
+            int ydir = Math.Sign(dir.y);
+
+            int i = 0;
+            int j = 0;
+            int startX = fromX / Constants.MapGridWidth / 2;
+            int startY = fromY / Constants.MapGridHeight / 2;
+            
+            
+           
+            int nextX = ((i + (xdir > 0 ? 1 : 0)) * xdir + startX) * Constants.MapGridWidth * 2;
+            int nextY = ((j + (ydir > 0 ? 1 : 0)) * ydir + startY) * Constants.MapGridHeight * 2;
+            int xydir = xdir * ydir;
+            while (true)
+            {
+                int delta = ((fromX - nextX) * (int)(dir.y * 1000) - (fromY - nextY) * (int)(dir.x * 1000)) * xydir;
+                if (delta > 0)
+                {
+                    if (getWalkLevel(startX + (i + 1) * xdir, startY + j * ydir) >= walkLevel)
+                        break;
+                    i++;
+                    nextX = ((i + (xdir > 0 ? 1 : 0)) * xdir + startX) * Constants.MapGridWidth * 2;
+                   
+                }
+                else if (delta == 0)
+                {
+                    if (getWalkLevel(startX + (i + 1) * xdir, startY + j * ydir) < walkLevel)
+                    {
+                        i++;
+                        nextX = ((i + (xdir > 0 ? 1 : 0)) * xdir + startX) * Constants.MapGridWidth * 2;
+                        
+                    }
+                    else if (getWalkLevel(startX + i * xdir, startY + (j + 1) * ydir) < walkLevel)
+                    {
+                        j++;
+                        nextY = ((j + (ydir > 0 ? 1 : 0)) * ydir + startY) * Constants.MapGridHeight * 2;
+                       
+                    }
+                    else
+                        break;
+                        
+                }
+                else
+                {
+                    if (getWalkLevel(startX + i  * xdir, startY + (j+1) * ydir) >= walkLevel)
+                        break;
+                    j++;
+                    nextY = ((j + (ydir > 0 ? 1 : 0)) * ydir + startY) * Constants.MapGridHeight * 2;
+                  
+                }
+                if (j >= maxDis || i >= maxDis   )
+                    break;
+                //if (points != null)
+                //    points.Add(new IntPoint(startX + i * xdir, startY + j * ydir));
+                //if (getWalkLevel((startX + i * xdir), (startY + j * ydir)) >= walkLevel)
+                //    return true;
+            }
+            
+            if (i > 0 || j > 0)
+           {
+               if (getWalkLevel((startX + i * xdir), (startY + j * ydir)) >= walkLevel)
+               {
+                   LoggerHelper.Debug("ss");
+               }
+                if(i>0)
+                {
+                    float x1 = (startX + xdir * (i)) * Constants.MapGridWidth * 2;
+                    float x2 = (startX + xdir * (i )+1) * Constants.MapGridWidth * 2;
+                    
+                    if(dir.y != 0 )
+                    {
+                        int ypos1 = (startY + ydir * (j)) * Constants.MapGridWidth * 2;
+                        int ypos2 = (startY + ydir *j+1) * Constants.MapGridWidth * 2; 
+                        float x3 = fromX + (ypos1 - fromY) * dir.x / dir.y;
+                        float x4 = fromX + (ypos2 - fromY) * dir.x / dir.y;
+                        //LoggerHelper.Debug("x1:" + x1 + ",x2:" + x2 + "x3:" + x3 + "x4:" + x4);
+                        x3 = Mathf.Min(x1,x2,x3,x4);
+                        x4 = Mathf.Max(x1,x2,x3,x4);
+                        if(dir.x>0)
+                        {
+                            x1 = Mathf.Max(x1, x3);
+                            x2 = Mathf.Min(x2, x4);
+                        }
+                        else
+                        {
+                            x1 = Mathf.Min(x1, x4);
+                            x2 = Mathf.Max(x2, x3);
+                        }
+                    }
+                    x1 = (x1 + x2) / 2;
+                    IntPoint pt =  new IntPoint((int)x1, (int)(fromY+(x1-fromX) * dir.y / dir.x));
+                   // if ((int)(pt.x / Constants.MapGridWidth / 2) != (startX + i * xdir) || (int)(pt.y / Constants.MapGridWidth / 2) != (startY + j * ydir))
+                    if (getWalkLevel((int)(pt.x / Constants.MapGridWidth / 2), (int)(pt.y / Constants.MapGridWidth / 2)) >= walkLevel)
+                        LoggerHelper.Debug("incorrect pt:" + (int)(pt.x / Constants.MapGridWidth / 2) + "!=" + (startX + i * xdir) + " or " + (int)(pt.y / Constants.MapGridWidth / 2) + " !=" + (startY + j * ydir)+",pt.y:"+pt.y+","+pt.x);
+                    return pt;
+
+                }
+                else if(j>0)
+                {
+                    float y1 = (startY + ydir * (j)) * Constants.MapGridWidth * 2;
+                    float y2 = (startY + ydir * j+1) * Constants.MapGridWidth * 2;
+
+                    int xpos1 = (startX + xdir * (j)) * Constants.MapGridWidth * 2;
+                    int xpos2 = (startX + xdir * j + 1) * Constants.MapGridWidth * 2;
+                    float y3 = fromY + (xpos1 - fromX) * dir.y / dir.x;
+                    float y4 = fromY + (xpos2 - fromX) * dir.y / dir.x;
+                    //LoggerHelper.Debug("y1:" + y1 + ",y2:" + y2 + "y3:" + y3 + "y4:" + y4);
+                  
+                    y3 = Mathf.Min(y1, y2, y3, y4);
+                    y4 = Mathf.Max(y1, y2, y3, y4);
+                    if (dir.x != 0)
+                    {
+                        if (dir.y > 0)
+                        {
+                            y1 = Mathf.Max(y1, y3);
+                            y2 = Mathf.Min(y2, y4);
+                        }
+                        else
+                        {
+                            y1 = Mathf.Min(y1, y4);
+                            y2 = Mathf.Max(y2, y3);
+                        }
+                    }
+                    y1 = (y1 + y2) / 2;
+                    IntPoint pt = new IntPoint((int)(fromX + (y1 - fromY) * dir.x / dir.y), (int)y1);
+                    if (getWalkLevel((int)(pt.x / Constants.MapGridWidth / 2), (int)(pt.y / Constants.MapGridWidth / 2)) >= walkLevel)
+                        LoggerHelper.Debug("incorrect2 pt:" + (int)(pt.x / Constants.MapGridWidth / 2) + "!=" + (startX + i * xdir) + " or " + (int)(pt.y / Constants.MapGridWidth / 2) + " !=" + (startY + j * ydir) + ",pt.y:" + pt.y + "," + pt.x);
+                    
+                    return pt;
+                }
+           }
+            return IntPoint.zero;
+        }
+		/* INTERFACE xw.game.service.IPathFinder */
+		
+		public  List<WalkStep> find(int startX,int startY,int endX,int endY,int walkLevel,Boolean usFloyd= false ,Dictionary<string,List<WalkStep>> midData=null )
+		{
+			count = 0;
+			
+			if (_gridData == null)
+				return null;
+			if (startX == endX && startY == endY)
+				return null;
+			_findVer++;
+			List<Node> openNodes = new List<Node>();
+            
+			 
+			Node curNode = getNode(startX, startY);
+            if (curNode == null)
+                return null;
+			if (curNode.walkLevel >= walkLevel)
+				return null;
+			Node firstNode = curNode;
+			Node destNode = getNode(endX, endY);
+			if (destNode == null)
+				return null;
+			if (destNode.walkLevel >= walkLevel)
+			{
+                int i=1;
+				for(i  = 1;i<MAX_STEP;i++)
+				{
+					destNode = getWalkableNode(endX,endY,i,walkLevel);
+					if(destNode != null)
+						break;
+				}
+                if (destNode == null)
+                {
+                    LoggerHelper.Warning("step more than :" + i);
+                    return null;
+                }
+				endX = destNode.x;
+				endY = destNode.y;
+ 
+			}
+			if (startX == endX && startY == endY)
+				return null;
+			if(usFloyd)
+			{
+				if(!hasBarriar(startX,startY,endX,endY,walkLevel))
+				{
+					List<WalkStep> pathDirect = new List<WalkStep>();
+					WalkStep step2 = new WalkStep();
+                    step2.pt = new IntPoint(endX,endY);
+					 
+					pathDirect.Add(step2);
+					WalkStep step1 = new WalkStep();
+                    step1.pt = new IntPoint(startX,startY);
+					 
+					pathDirect.Add(step1);
+					adjustDir(pathDirect);
+					return pathDirect;
+				}
+			}
+			curNode.g = 0;
+			curNode.h = this.heuristic(curNode, destNode);
+			curNode.f = curNode.g + curNode.f;
+			int tm = TimerManager.getCurrentTime();
+			
+			int cnt = 0;
+			int maxOpenSz = 0;
+			
+			while (curNode != destNode)
+			{
+			 
+				
+				checkNode(curNode,getNode(curNode.x - 1, curNode.y+1),destNode,openNodes,walkLevel,diagCost);
+				checkNode(curNode,getNode(curNode.x + 1, curNode.y-1),destNode,openNodes,walkLevel,diagCost);
+				checkNode(curNode,getNode(curNode.x - 1, curNode.y-1),destNode,openNodes,walkLevel,diagCost);
+				checkNode(curNode,getNode(curNode.x + 1, curNode.y+1),destNode,openNodes,walkLevel,diagCost);
+				checkNode(curNode, getNode(curNode.x - 1, curNode.y), destNode, openNodes, walkLevel, straightCost);
+				checkNode(curNode,getNode(curNode.x , curNode.y-1),destNode,openNodes,walkLevel,straightCost);
+				checkNode(curNode, getNode(curNode.x , curNode.y + 1), destNode, openNodes,  walkLevel, straightCost);
+				checkNode(curNode,getNode(curNode.x + 1, curNode.y),destNode,openNodes,walkLevel,straightCost);
+				//closeNodes[(curNode.x<<8)+curNode.y] = 1;
+				curNode.status = 2;
+				curNode.version =(int) _findVer;
+				if (openNodes.Count == 0)
+					return null;
+				if (openNodes.Count > maxOpenSz)
+					maxOpenSz = openNodes.Count;
+				
+				 
+			 
+				curNode = openNodes[openNodes.Count-1];
+                openNodes.RemoveAt(openNodes.Count - 1);
+			 
+				cnt++;
+				//if (cnt > 5)
+				//return null;
+			}
+
+			List<WalkStep> path = buildPath(destNode,firstNode);
+			if(midData != null)
+				midData["orig"] = path;
+			if(usFloyd)
+				return floyd(path,walkLevel,midData);
+			return path;
+			
+		}
+		private  int getDir(int x1,int  y1,int  x2,int  y2)
+		{
+			if (x1 < x2)
+			{
+				if (y1 < y2)
+					return DirectionType.SouthEast;
+				else if (y1 > y2)
+					return DirectionType.NorthEast;
+				else
+					return DirectionType.East;
+			}
+			else if (x1 > x2)
+			{
+				if (y1 < y2)
+					return DirectionType.SouthWest;
+				else if (y1 > y2)
+					return DirectionType.NorthWest;
+				else
+					return DirectionType.West;
+			}
+			else
+			{
+				if (y1 < y2)
+					return DirectionType.South;
+				else if (y1 > y2)
+					return DirectionType.North;
+			}
+			return DirectionType.South;
+		}
+        private List<WalkStep> buildPath(Node dest, Node fist)
+		{
+			List<WalkStep>  path = new List<WalkStep>();
+			Node node = dest;
+			WalkStep lastStep = new WalkStep();
+            lastStep.pt = new IntPoint(node.x,node.y);
+			 
+			lastStep.transparent = node.transparent;
+			path.Add(lastStep);
+			if(node.parent != null)
+				lastStep.dir =DirectionType.calcDirection(node.parent.x, node.parent.y, node.x, node.y,0);
+			while (node != fist) {
+				node = node.parent;
+				WalkStep step = new WalkStep();
+				if(node.parent != null)
+					step.dir = DirectionType.calcDirection(node.parent.x, node.parent.y, node.x, node.y,0);
+				else
+					step.dir = DirectionType.South;
+                step.pt = new IntPoint(node.x,node.y);
+				 
+				step.transparent = node.transparent;
+				lastStep = step;
+				path.Add( step );
+			}
+			
+			return path;	
+			
+		}
+		
+		
+		/****************************************************************************** 
+		*
+		*	These are our avaailable heuristics 
+		*
+		******************************************************************************/
+        private float euclidianHeuristic(Node node, Node destinationNode)
+		{
+			float dx = node.x - destinationNode.x;
+			float dy = node.y - destinationNode.y;
+			
+			return Mathf.Sqrt( dx * dx + dy * dy )  ;
+		}
+		
+		private   float manhattanHeuristic(Node node,Node  destinationNode)
+		{
+			return Mathf.Abs(node.x - destinationNode.x)   + 
+				   Mathf.Abs(node.y - destinationNode.y) ;
+		}
+
+        private float diagonalHeuristic(Node node, Node destinationNode)
+		{
+			float dx = Mathf.Abs(node.x - destinationNode.x);
+			float dy = Mathf.Abs(node.y - destinationNode.y);
+			
+			float diag = Mathf.Min( dx, dy );
+			float straight = dx + dy;
+			
+			return diagCost * diag + straightCost * (straight - 2 * diag);
+		}
+		
+		public  Boolean isTransparent(int x,int  y)
+		{
+			if (x < 0 || y < 0 || x>=_colNum|| y>=_rowNum)
+				return false;
+			if(null == _gridData)
+				return false;
+			int i = (x << 8) + y;
+			if (_nodes.ContainsKey(i))
+				return _nodes[i].transparent;
+			else
+			{
+				_gridData.position = (y * _colNum + x) * 2; 
+				int flag = _gridData.readUnsignedByte();		
+				return (flag & 0x80)>0;
+			}
+			
+		}
+		private  Boolean inLine(WalkStep step1,WalkStep step2,WalkStep step3)
+		{
+			return (step1.pt.x - step3.pt.x)*(step2.pt.y - step3.pt.y) == (step2.pt.x - step3.pt.x)*(step1.pt.y - step3.pt.y);
+		}
+		public  Boolean hasBarriarPixel2(int fromX,int fromY,int toX,int toY,int walkLevel,List<IntPoint> points=null )
+		{
+			int xdir = fromX>toX?-1:1;
+			int ydir = fromY>toY?-1:1;
+			
+			int i = 0;
+			int j = 0;
+			int startX = fromX/Constants.MapGridWidth/2;
+			int startY = fromY/Constants.MapGridHeight/2;
+			int xCount = Mathf.Abs((int)(fromX/Constants.MapGridWidth/2) - (int)(toX/Constants.MapGridWidth/2));
+			int yCount = Mathf.Abs((int)(fromY/Constants.MapGridHeight/2) - (int)(toY/Constants.MapGridHeight/2));
+			if(xCount == 0 && yCount == 0)
+				return false;
+			int deltaX = (toX - fromX);
+			int deltaY = (toY - fromY);
+			int nextX = ((i+(xdir>0?1:0))*xdir+startX)*Constants.MapGridWidth*2;
+			int nextY = ((j+(ydir>0?1:0))*ydir+startY)*Constants.MapGridHeight*2;
+			int xydir =xdir*ydir;
+			while(true)
+			{
+				int delta = ((fromX - nextX)*deltaY-(fromY-nextY)*deltaX)*xydir;
+				if(delta>0)
+				{
+					i++;
+					nextX = ((i+(xdir>0?1:0))*xdir+startX)*Constants.MapGridWidth*2;
+					xCount--;
+				}
+				else if(delta == 0)
+				{
+					if(getWalkLevel(startX+(i+1)*xdir,startY+j*ydir)< walkLevel)
+					{
+						i++;
+						nextX = ((i+(xdir>0?1:0))*xdir+startX)*Constants.MapGridWidth*2;
+						xCount--;
+					}
+					else if(getWalkLevel(startX+i*xdir,startY+(j+1)*ydir)< walkLevel)
+					{
+						j++;
+						nextY = ((j+(ydir>0?1:0))*ydir+startY)*Constants.MapGridHeight*2;
+						yCount--;
+					}
+					else
+						return true;
+				}
+				else
+				{
+					j++;
+					nextY = ((j+(ydir>0?1:0))*ydir+startY)*Constants.MapGridHeight*2;
+					yCount--;
+				}
+				if(yCount<0 || xCount<0||(xCount==0&&yCount==0)) 
+					break;
+				if(points != null)
+					points.Add(new IntPoint(startX+i*xdir,startY+j*ydir));
+				if(getWalkLevel((startX+i*xdir),(startY+j*ydir))>= walkLevel)
+					return true;
+			}
+			return false;
+		}
+		public  Boolean hasBarriarPixel(int fromX,int fromY,int toX,int toY,int walkLevel,List<IntPoint> points=null )
+		{
+			int xdir = fromX>toX?-1:1;
+			int ydir = fromY>toY?-1:1;
+			
+			int i = 0;
+			int j = 0;
+			int startX = fromX/Constants.MapGridWidth;
+			int startY = fromY/Constants.MapGridHeight;
+			int xCount = Mathf.Abs((int)(fromX/Constants.MapGridWidth) - (int)(toX/Constants.MapGridWidth));
+			int yCount = Mathf.Abs((int)(fromY/Constants.MapGridHeight) - (int)(toY/Constants.MapGridHeight));
+			if(xCount == 0 && yCount == 0)
+				return false;
+			int deltaX = (toX - fromX);
+			int deltaY = (toY - fromY);
+			int nextX = ((i+(xdir>0?1:0))*xdir+startX)*Constants.MapGridWidth;
+			int nextY = ((j+(ydir>0?1:0))*ydir+startY)*Constants.MapGridHeight;
+			int xydir =xdir*ydir;
+			while(true)
+			{
+				int delta = ((fromX - nextX)*deltaY-(fromY-nextY)*deltaX)*xydir;
+				if(delta>0)
+				{
+					i++;
+					nextX = ((i+(xdir>0?1:0))*xdir+startX)*Constants.MapGridWidth;
+					xCount--;
+				}
+				else if(delta == 0)
+				{
+					if(getWalkLevel(startX+(i+1)*xdir,startY+j*ydir)< walkLevel)
+					{
+						i++;
+						nextX = ((i+(xdir>0?1:0))*xdir+startX)*Constants.MapGridWidth;
+						xCount--;
+					}
+					else if(getWalkLevel(startX+i*xdir,startY+(j+1)*ydir)< walkLevel)
+					{
+						j++;
+						nextY = ((j+(ydir>0?1:0))*ydir+startY)*Constants.MapGridHeight;
+						yCount--;
+					}
+					else
+						return true;
+				}
+				else
+				{
+					j++;
+					nextY = ((j+(ydir>0?1:0))*ydir+startY)*Constants.MapGridHeight;
+					yCount--;
+				}
+				if(yCount<0 || xCount<0||(xCount==0&&yCount==0)) 
+					break;
+				if(points != null)
+					points.Add(new IntPoint(startX+i*xdir,startY+j*ydir));
+				if(getWalkLevel(startX+i*xdir,startY+j*ydir)>= walkLevel)
+					return true;
+			}
+			return false;
+		}
+		
+		public  Boolean hasBarriar(int fromX,int fromY,int toX,int toY,int walkLevel,List<IntPoint> points=null )
+		{
+			 
+			
+			
+			int xdir = fromX>toX?-1:1;
+			int ydir = fromY>toY?-1:1;
+			
+			int i = 0;
+			int j = 0;
+			
+			int xCount = Mathf.Abs(fromX - toX);
+			int yCount = Mathf.Abs(fromY - toY);
+			int deltaX = (toX - fromX);
+			int deltaY = (toY - fromY);
+			
+			while(true)
+			{
+ 
+				int delta = deltaY*(2*i*xdir+1)*ydir -(2*j*ydir+1)*xdir*deltaX;
+				if(delta>0)					
+ 
+				{
+					j +=ydir;
+					yCount--;
+ 
+				}
+				else if(delta == 0)
+				{
+					if(getWalkLevel(fromX+i+xdir,fromY+j)< walkLevel)
+					{
+						i += xdir;
+						xCount--;
+					}
+					else if(getWalkLevel(fromX+i,fromY+j+ydir)< walkLevel)
+					{
+						j += ydir;
+						yCount--;
+					}
+					else
+						return true;
+				}
+				else
+				{
+					i += xdir;
+ 
+					xCount--;
+				 
+				}
+ 
+				
+				if(yCount<0 || xCount<0||(xCount==0&&yCount==0)) 
+					break;
+				if(points != null)
+					points.Add(new IntPoint(fromX+i,fromY+j));
+				if(getWalkLevel(fromX+i,fromY+j)>= walkLevel)
+					return true;
+			}
+			 
+			return false;
+		}
+		public  List<WalkStep> floyd(List<WalkStep> path,int walkLevel,Dictionary<string,List<WalkStep>> midData=null )
+		{
+ 
+			int i = 0;
+			WalkStep step = path[0];
+ 
+			List<WalkStep> newPath = path;
+			int retry = 0;
+			while(retry<MAX_FLOYD && newPath.Count>2)
+			{
+				List<WalkStep> resultPath = new List<WalkStep>();
+				resultPath.Add(newPath[0]);
+				i=1;
+				step = newPath[0];
+				bool shouldEnd = true;
+				while(i<newPath.Count-1)
+				{
+					if(hasBarriar(step.pt.x,step.pt.y,newPath[i+1].pt.x,newPath[i+1].pt.y,walkLevel))
+					{
+						step = newPath[i];
+						resultPath.Add(step);
+						
+					}
+					else
+						shouldEnd = false;
+					i++;
+					
+				}
+				resultPath.Add(newPath[newPath.Count-1]);
+				newPath = resultPath;
+				if(midData != null)
+					midData["retry_"+retry]=newPath;
+				if(shouldEnd)
+					break;
+				retry++;
+			}
+			
+			if(midData != null)
+				midData["final"] = newPath;
+			adjustDir(newPath);
+			return newPath;
+			
+		}
+		private  void adjustDir(List<WalkStep> arr)
+		{
+			int len = arr.Count;
+			for(  int i =len-1;i>0;i--)
+			{
+				arr[i].dir = DirectionType.calcDirection(arr[i].pt.x,arr[i].pt.y,arr[i-1].pt.x,arr[i-1].pt.y,0);
+				
+			}
+			arr[0].dir = arr[1].dir;
+		}
+	   delegate void Fun(int x,int y);
+		public  IntPoint getClosestAvailPoint(IntPoint from,int toX,int toY,int minDist= 2 ,int maxDist=100 ,int walkLevel= 1 ,Boolean checkBarriar=true )
+		{
+			IntPoint minPoint = new IntPoint(-1,-1);
+			int minPointDist = int.MaxValue;
+//			if(minDist == 0 && getWalkLevel(toX,toY)< walkLevel && (!checkBarriar || !hasBarriar(toX,toY,x,y,walkLevel))
+//				return new IntPoint(toX,toY);
+           
+
+            
+			Fun fun = (int x ,int y )=>
+			{
+				if(getWalkLevel(x,y)< walkLevel)
+				{
+					if(!checkBarriar || !hasBarriar(toX,toY,x,y,walkLevel))
+					{
+						int dist = Mathf.Max(Mathf.Abs(x-from.x),Mathf.Abs(y-from.y));
+						if(minPointDist>dist)
+						{
+							minPointDist = dist;
+							minPoint.x = x;
+							minPoint.y = y;
+						}
+						
+					}
+				}
+			};
+			for(  int i = minDist;i<maxDist;i++)
+			{
+				for(int  j  = toX-i;j<toX+i;j++)
+				{
+					fun(j,toY-i);
+					fun(j,toY+i);
+					
+				}
+				 
+				for(int j = toY-i;j<toY+i;j++)			 
+				{
+					fun(toX-i,j);
+					fun(toX+i,j);
+				}
+				if(minPoint.x>=0 && minPoint.y>=0)
+					return minPoint;
+			}
+			
+			return IntPoint.zero;
+		}
+		
+		public  Boolean canWalk(int x,int  y,int  walkLevel)
+		{
+            int walkLv = getWalkLevel(x, y);
+            if (walkLv == -1)
+            {
+                return false;
+            }
+            return walkLv < walkLevel;
+		}
+        public GameObject GetTestMesh()
+        {
+            GameObject root = new GameObject();
+
+            List<Vector3> verts = new List<Vector3>();
+            List<int> triangles = new List<int>();
+            List<Color> colors = new List<Color>();
+
+            for (int i = 0; i < mapWidth ; i++)
+                for (int j = 0; j < mapHeight; j++)
+                {
+
+                    if (canWalk(i, j,1))
+                    {
+                        int idx = verts.Count;
+                        Vector3 pt = PathUtil.Logic2Real(new Vector3(i, j, 0));
+                        verts.Add(new Vector3(pt.x,0,pt.y));
+                        pt = PathUtil.Logic2Real(new Vector3(i + 1, j, 0));
+                        verts.Add(new Vector3(pt.x,0,pt.y));
+                         pt = PathUtil.Logic2Real(new Vector3(i + 1, j+1, 0));
+                        verts.Add(new Vector3(pt.x,0,pt.y));
+                         pt = PathUtil.Logic2Real(new Vector3(i , j+1, 0));
+
+                        verts.Add(new Vector3(pt.x,0,pt.y));
+                        triangles.Add(idx);
+                        triangles.Add(idx + 1);
+                        triangles.Add(idx + 2);
+                        triangles.Add(idx);
+                        triangles.Add(idx + 2);
+                        triangles.Add(idx + 3);
+                        colors.Add(new Color(1.0f, 0f, 0f));
+                        colors.Add(new Color(1.0f, 0f, 0f));
+                        colors.Add(new Color(1.0f, 0f, 0f));
+                        colors.Add(new Color(1.0f, 0f, 0f));
+                        if (verts.Count >= 4000)
+                        {
+                            Mesh m = new Mesh();
+                            m.vertices = verts.ToArray();
+                            m.triangles = triangles.ToArray();
+                            m.colors = colors.ToArray();
+                            GameObject obj = new GameObject();
+                            MeshFilter mf = obj.AddComponent<MeshFilter>();
+                            obj.AddComponent<MeshRenderer>();
+                            mf.mesh = m;
+                            mf.transform.parent = root.transform;
+                            verts = new List<Vector3>();
+                            triangles = new List<int>();
+                            colors = new List<Color>();
+
+                        }
+                    }
+                    //else
+                    //{
+                    //    colors.Add(new Color(0f,0f,0f));
+                    //    colors.Add(new Color(0f,0f,0f));
+                    //    colors.Add(new Color(0f,0f,0f));
+                    //    colors.Add(new Color(0f,0f,0f));
+                    //}
+                }
+            if (verts.Count > 0)
+            {
+                Mesh m = new Mesh();
+                m.vertices = verts.ToArray();
+                m.triangles = triangles.ToArray();
+                m.colors = colors.ToArray();
+                GameObject obj = new GameObject();
+                MeshFilter mf = obj.AddComponent<MeshFilter>();
+                obj.AddComponent<MeshRenderer>();
+                mf.mesh = m;
+                mf.transform.parent = root.transform;
+            }
+
+
+            return root;
+        }
+	}
+
+}
+class Node 
+{
+	public float f,g,h;
+	public int  x ,y;
+	 
+	public int status;
+	public int version;
+	public Node parent;
+	private int _walkLevel;
+	public bool transparent;
+	public  Node(int x,int y,int walkLevel,bool transparent)
+	{
+		f = 0;
+		g = 0;
+		h = 0;
+		version = 0;
+		this.x = x;
+		this.y = y;
+		this._walkLevel = walkLevel;
+		this.transparent = transparent;
+	}
+	public  String toString()
+	{
+		return "x:" + x + ",y:" + y + ",f:"+f+",g:"+g+",h:"+h+  ",transparent:" + transparent;
+	}
+	
+	public  int  walkLevel 
+    {
+        get
+            {
+		    return _walkLevel;
+	    }
+    }
+	
+ 
+}

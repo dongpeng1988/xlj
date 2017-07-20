@@ -1,0 +1,519 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using UnityEngine;
+using UnityEditor;
+using Config;
+using ICSharpCode.SharpZipLib.Zip.Compression.Streams;
+using ICSharpCode.SharpZipLib.Zip.Compression;
+using System.IO;
+using Cmd;
+using sw.util;
+using NPOI.XSSF.UserModel;
+using NPOI.SS.UserModel;
+using System.Data.OleDb;
+using NetUtilityLib;
+using System.Data;
+using sw.scene.util;
+using sw.manager;
+ 
+
+public class LoadMapWindow:EditorWindow
+{
+    [MenuItem("Build/LoadMap")]
+    static void onLoadMap()
+    {
+        
+        LoadMapWindow window = (LoadMapWindow)GetWindow(typeof(LoadMapWindow));
+        window.Show();
+        
+
+    }
+    string mapFileName;
+    public LoadMapWindow()
+    {
+        mapFileName = EditorConfig.ExcelDataDir + "002_地图配置表.xls";
+        ExcelHelper helper = new ExcelHelper(mapFileName);
+        tileData = helper.ExcelToDataTable("Sheet2");
+            
+    }   
+    int selected_size = 1;
+    string[] names = {"Normal","Doubule","Trible"};
+    int[] sizes = {1,2,4};
+    List<string> nameLst = new List<string>();
+   
+    DataRow curMapData;
+    DataTable tileData;
+    void onOpenMap(DataRow data)
+    {
+         
+      
+        string[] assets2 = AssetDatabase.GetAssetPathsFromAssetBundle("scene/" + data["mapResId"].ToString() + ".unity3d");
+        if(assets2.Length == 0)
+        {
+            Debug.LogError("地图资源不存在:" + data["mapResId"].ToString());
+
+        }
+        else
+        {
+            if (assets2.Length > 1)
+                Debug.LogWarning("有重复的地图资源:" + data["mapResId"].ToString());
+            string[] demos = AssetDatabase.FindAssets(data["mapResId"].ToString() + "_demo t:Scene");
+            if(demos.Length == 0)
+            {
+                Debug.LogError("地图demo资源不存在:" + data["mapResId"].ToString());
+                return;
+            }
+            Debug.Log("begin to open scene:" + AssetDatabase.GUIDToAssetPath(demos[0]));
+            bool ret = EditorApplication.OpenScene(AssetDatabase.GUIDToAssetPath(demos[0]));
+            curMapData = data;
+            EditorData.mapId = curMapData["mapid"].ToString();
+            EditorData.mapResId = curMapData["mapResId"].ToString();
+            EditorData.mapTileId = curMapData["mapTileId"].ToString();
+            LoadTile(EditorData.mapTileId);
+            Debug.Log("set map tile id:" + EditorData.mapTileId);
+            safeConfig();
+            curTool = 0;
+            EditorData.start_edit_tile = false;
+            showMesh = false;
+
+            Repaint();
+        }
+      
+    }
+    void safeConfig()
+    {
+        string fn = Application.dataPath + "/mapedit.info";
+        Debug.Log("write config:" + fn);
+        using (StreamWriter fs = new StreamWriter(fn))
+        {
+            fs.WriteLine("mapid=" + curMapData["mapid"].ToString());
+            fs.WriteLine("mapResId=" + curMapData["mapResId"].ToString());
+            fs.WriteLine("mapTileId=" + curMapData["mapTileId"].ToString());
+
+        }
+    }
+    bool selected, showMesh;
+    int curTool = 0;
+    string[] toolbars = new string[] { "通过", "不可通过" };
+    TileHelper helper;
+    int countShift;
+    void OnGUI()
+    {
+        EditorGUIUtility.labelWidth = 80f;
+        if (GUILayout.Button("打开地图"))
+        {
+            OpenMapWindow window = (OpenMapWindow)GetWindow(typeof(OpenMapWindow));
+            window.onOpenMap = onOpenMap;
+            window.Show();
+        }
+        if(curMapData != null)
+        {
+           
+            EditorGUILayout.LabelField("地图名称:" + curMapData["name"]);
+            EditorGUILayout.LabelField("地图ID:" + curMapData["mapid"]);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("地图资源ID:" + curMapData["mapResId"]);
+            if(GUILayout.Button("更换为当前地图"))
+            {
+                Debug.Log("cur scene:"+ EditorApplication.currentScene);
+                AssetImporter importer = AssetImporter.GetAtPath(EditorApplication.currentScene);
+                if (importer != null)
+                {
+                    Debug.Log("asset bundle name:" + importer.assetBundleName);
+                    string resid = importer.assetBundleName;
+                    resid = resid.Substring(resid.LastIndexOf("/") + 1);
+                    resid = resid.Substring(0, resid.LastIndexOf("."));
+
+                    curMapData["mapResId"] = resid;
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.BeginHorizontal();
+            string mapResId = curMapData["mapResId"].ToString();
+            List<string> allTiles = new List<string>();
+            string curTile = curMapData["mapTileId"].ToString();
+            int selTile = 0;
+            foreach(DataRow r in tileData.Rows)
+            {
+                if(r["resid"].ToString() == mapResId)
+                {
+                    string tileid = r["mapTileId"].ToString();
+                    string memo = r["memo"].ToString();
+                    if(memo.Length>5)
+                        memo = memo.Substring(0,5);
+                    allTiles.Add(tileid +","+ memo);
+                    if(tileid == curTile)
+                    {
+                        selTile = allTiles.Count - 1;
+                    }
+                }
+            }
+             
+            int idx =  EditorGUILayout.Popup("通过性:", selTile, allTiles.ToArray());
+            if(selTile != idx)
+            {
+      
+                EditorData.mapTileId = allTiles[idx].Split(',')[0];
+                Debug.Log("new map tile id:" + EditorData.mapTileId);
+                LoadTile(EditorData.mapTileId);
+                curMapData["mapTileId"] = EditorData.mapTileId;
+
+            }
+            selTile = idx;
+ 
+            if (GUILayout.Button("新建"))
+            {
+                createTile();
+            }
+            EditorGUILayout.EndHorizontal();
+            bool show = GUILayout.Toggle(showMesh, "显示通过性", "Button");
+            if (show && show != showMesh)
+            {
+                Debug.Log("show:" + show + ",showmesh:" + showMesh);
+                showTile();
+            }
+            showMesh = show;
+            if (showMesh)
+            {
+
+                bool cursel = GUILayout.Toggle(selected, "编辑", "Button");
+
+                selected = cursel;
+                EditorData.start_edit_tile = selected;
+                if (selected)
+                {
+
+                    //if(EditorData.terrainMan != null)
+                    //{
+                    //    countShift++;
+                    //    EditorData.terrainMan.pathFinder.setColFlag(countShift % 3 + 1, 1);
+                    //}
+                    curTool = GUILayout.Toolbar(curTool, toolbars);
+                   
+                    countShift = EditorGUILayout.IntSlider(countShift, 1, 3);
+                    terrainMan.pathFinder.setColFlag(countShift , curTool);
+                   
+                }
+            }
+            else if (testMesh != null)
+            {
+                GameObject.DestroyImmediate(testMesh);
+                testMesh = null;
+            }
+
+ 
+
+            if (GUILayout.Button("保存"))
+            {
+                ExcelHelper.UpdateExcel(mapFileName, "Sheet1", "mapid", curMapData);
+                terrainMan.pathFinder.saveTile(curTile);
+                Debug.Log("报错成功 地图文件：" + mapFileName + ",通过性:" + curTile);
+            }
+        }
+
+        //if (GUILayout.Button("加载数据表"))
+        {
+
+            //Workbook workbook1 = new Workbook();
+            //workbook1.Open(ExcelDataDir + "003_副本数据表.xlsx");
+            //Worksheet sheet = workbook1.Worksheets["副本全局表"];
+            //int cnt =  sheet.Cells.Rows.Count;
+            //for (int i = 0; i < cnt;i++ )
+            //{
+            //    if(sheet.Cells[i, 0].Value.ToString() == "1001")
+            //    {
+            //        sheet.Cells[i, 2].PutValue(sheet.Cells[i, 2].Value.ToString()+ "test");
+            //        break;
+            //    }
+
+            //}
+            //workbook1.Save(ExcelDataDir + "003_副本数据表.xlsx");
+
+            //ExcelHelper helper = new ExcelHelper(ExcelDataDir + "003_副本数据表.xlsx");
+            //DataTable dt = helper.ExcelToDataTable("副本全局表");
+            //Debug.Log("dt num:" + dt.Rows.Count + ",first data:" + dt.Rows[0]["func"]);
+           // bool ret = EditorApplication.OpenScene("Assets/ART/Scene/z_zhucheng/z_zhucheng_demol.unity");
+           //Debug.Log("ret:" + ret);
+            //FileStream fs = new FileStream(ExcelDataDir + "003_副本数据表.xlsx", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+            //XSSFWorkbook workbook = new XSSFWorkbook(fs);
+            //ISheet sheet = workbook.GetSheet("副本全局表");
+            //for (int i = 0; i < 10000; i++)
+            //{
+            //    ICell cell = sheet.GetRow(i).GetCell(0);
+            //    string cellVal = "";
+            //    if (cell.CellType == CellType.Numeric)
+            //        cellVal = cell.NumericCellValue.ToString();
+            //    else if (cell.CellType == CellType.String)
+            //        cellVal = cell.StringCellValue;
+            //    Debug.Log("cell:" + cellVal);
+            //    if (cellVal == "1001")
+            //    {
+            //        sheet.GetRow(i).GetCell(2).SetCellValue("sss");
+            //        break;
+            //    }
+            //}
+            //workbook.Write(fs);
+            //fs.Close();
+
+
+             
+
+                //Debug.Log("open success");
+            //if (ConfigAsset.Instance.loadComplete == true)
+            //{
+            //    nameLst.Clear();
+            //    ConfigAsset.Instance.WalkmapCfgsCfgs((MapConfig cfg) =>
+            //    {
+            //        if ((cfg.mapid.ToString() != "") && (cfg.mapid.ToString() != "0"))
+            //        {
+            //            nameLst.Add(cfg.mapid.ToString());
+            //        }
+            //        else
+            //        {
+
+            //        }
+            //        return false;
+            //    });
+            //    if (nameLst.Count > 0 && nameLst.Count != names.Length)
+            //    {
+            //        names = new string[nameLst.Count];
+            //        sizes = new int[nameLst.Count];
+            //        for (int i = 0; i < nameLst.Count; i++)
+            //        {
+            //            names[i] = nameLst[i];
+            //            sizes[i] = int.Parse(nameLst[i]);
+            //        }
+            //    }
+            //}
+        }
+
+
+        //selected_size = EditorGUILayout.IntPopup("选择数据表:", selected_size, names, sizes);
+        //MapConfig mapcfg;
+        //mapcfg = ConfigAsset.Instance.getMapCfgs(selected_size);
+        //if (mapcfg != null)
+        //{
+        //    GUILayout.Label("地图资源id为：" + mapcfg.mapResId);
+        //    GUILayout.Label("地图通过性id为：" + mapcfg.mapResId);
+
+        //    EditMapCameraManager.Instance.mapResId = mapcfg.mapResId;
+        //    EditMapCameraManager.Instance.mapTileId = mapcfg.mapResId;
+        //}
+        //if (GUILayout.Button("加载地图" + selected_size))
+        //{
+        //     //EditorApplication.isPaused = false;
+        //     //EditorApplication.isPlaying = false;
+
+
+        //     //UnityEditor.FileUtil.DeleteFileOrDirectory(EditorApplication.currentScene);
+
+        //     //UnityEditor.FileUtil.DeleteFileOrDirectory("Assets/ART/Scene/z_zhucheng/y_yunnanchonggu_04_demo.untiy");
+
+
+        //    EditorApplication.OpenScene("Assets/ART/Scene/z_zhucheng/z_zhucheng_demol.untiy");
+
+        //    EditMapCameraManager.Instance.readMapXML(selected_size);
+        //}
+        
+    }
+    void LoadTile(string name)
+    {
+        //if (terrainMan == null)
+        {
+            terrainMan = new TestTerrainManager();
+            terrainMan.pathFinder.setRoleTransAndTerrain(null, terrainMan);
+            EditorData.terrainMan = terrainMan;
+        }
+        string targetPath = Application.streamingAssetsPath.Substring(0, Application.streamingAssetsPath.Length - 15) + "map/" + name + ".bytes";
+        if(!File.Exists(targetPath))
+        {
+            Debug.Log("通过性文件不存在:" + targetPath);
+            return;
+        }
+        using (FileStream fs = new FileStream(targetPath, FileMode.Open))
+        {
+            byte[] data = new byte[fs.Length];
+            fs.Read(data, 0,(int) fs.Length);
+            ByteArray bt = new ByteArray(data);
+
+            terrainMan.pathFinder.fillData(bt);
+            PathUtilEdit.origin_x = terrainMan.pathFinder.origin_x;
+            PathUtilEdit.origin_z = terrainMan.pathFinder.origin_z;
+        }
+    }
+    ITerrainManager terrainMan;
+
+    GameObject testMesh;
+    void showTile()
+    {
+        RenderSettings.fog = false;
+        if (terrainMan == null)
+        {
+            terrainMan = new TestTerrainManager();
+            terrainMan.pathFinder.setRoleTransAndTerrain(null, terrainMan);
+            EditorData.terrainMan = terrainMan;
+        }
+        GameObject obj =  GameObject.Find("TileMesh");
+
+        if (obj != null)
+            GameObject.DestroyImmediate(obj);
+        testMesh = terrainMan.pathFinder.GetTestMesh();
+        testMesh.name = "TileMesh";
+        for (int i = 0; i < testMesh.transform.childCount; i++)
+        {
+            testMesh.transform.GetChild(i).gameObject.AddComponent<TileHelper>();
+            //testMesh.transform.GetChild(i).gameObject.hideFlags   = HideFlags.NotEditable;
+        }
+
+        testMesh.AddComponent<TileHelper>();
+        //testMesh.transform.localPosition = new Vector3(terrainMan.pathFinder.origin_x, 0, terrainMan.pathFinder.origin_z);
+                    
+    }
+    public  void createTile()
+    {
+        if (curMapData == null || tileData == null)
+            return;
+        string tileName = curMapData["mapid"].ToString().Substring(0,6);
+        string mapresid = curMapData["mapResId"].ToString();
+        Dictionary<string,int> curTiles = new Dictionary<string,int>();
+        foreach(DataRow r in tileData.Rows)
+        {
+              if(r["resid"].ToString() == mapresid)
+              {
+                  curTiles[r["mapTileId"].ToString()] = 1;
+                  Debug.Log("tileid:" + r["mapTileId"].ToString());
+              }
+        }
+        int suffix = 1;
+        string tmp = tileName;
+        Debug.Log("check content:" + tmp);
+        while (curTiles.ContainsKey(tmp))
+        {
+            tmp = tileName + suffix;
+            suffix++;
+        }
+        tileName = tmp;
+
+        float xMax = 0, xMin = 0, zMax = 0, zMin = 0, yMax = 0, yMin = 0, xMaxSize = 0, xMinSize = 0;
+        MeshRenderer[] rendererObjs;
+        rendererObjs = GameObject.FindObjectsOfType<MeshRenderer>();
+        int count_items = 0, total_size = 0;
+        foreach (MeshRenderer item in rendererObjs)
+        {
+            if (item.gameObject.layer != LayerConst.LAYER_GROUND)
+                continue;
+            if (xMax < item.bounds.max.x)
+                xMax = item.bounds.max.x;
+            if (xMin > item.bounds.min.x)
+                xMin = item.bounds.min.x;
+            if (zMax < item.bounds.max.z)
+                zMax = item.bounds.max.z;
+            if (zMin > item.bounds.min.z)
+                zMin = item.bounds.min.z;
+            if (yMax < item.bounds.max.y)
+                yMax = item.bounds.max.y;
+            if (yMin > item.bounds.min.y)
+                yMin = item.bounds.min.y;
+
+            if (xMaxSize < item.bounds.size.x)
+                xMaxSize = item.bounds.size.x;
+            if (xMinSize > item.bounds.size.x)
+                xMinSize = item.bounds.size.x;
+            count_items++;
+        }
+        Debug.Log("xMax xMin zMax zMin yMax yMin" + xMax + "  " + xMin + "  " + zMax + "  " + zMin + "  " + yMax + "  " + yMin);
+        Debug.Log("all meshrenderer is" + rendererObjs.Length + " layer ground" + LayerConst.LAYER_GROUND + "count_items is" + count_items + "size is " + total_size);
+
+        int col_num = 0, row_num = 0;
+        float origin_x = 0, origin_z = 0;
+
+        origin_x = xMin;
+        origin_z = zMax;
+
+        col_num = (int)((xMax - xMin) / ConstantsRes.GRID_SIZE);
+        row_num = (int)((zMax - zMin) / ConstantsRes.GRID_SIZE);
+
+        Debug.Log("tileWidth tileHeight" + col_num + row_num);
+
+        RaycastHit hitInfo;
+        LayerMask groundLayer = LayerConst.MASK_GROUND;
+        int count_can_walk = 0;
+        int count_total_point = 0;
+
+        uint _version = 0;
+        string targetPath = Application.streamingAssetsPath.Substring(0, Application.streamingAssetsPath.Length - 15) + "map/";
+        Directory.CreateDirectory(targetPath);
+        FileStream fs;
+        fs = new FileStream(targetPath + tileName + ".bytes", FileMode.Create);
+        BinaryWriter bw = new BinaryWriter(fs);
+        bw.Write(0x0821);
+        bw.Write(_version);
+        bw.Write(col_num);
+        bw.Write(row_num);
+        bw.Write((float)origin_x);
+        bw.Write((float)origin_z);
+
+        Debug.Log("map size:" + col_num + "*" + row_num + ",origin:" + origin_x + "," + origin_z);
+
+        int i = 0;
+        for (int j = 0; j < row_num; j++)
+        {
+            i = 0;
+            for (; i < col_num; i++)
+            {
+                float x = origin_x + (float)(i + 0.5) * ConstantsRes.GRID_SIZE;
+                float z = origin_z - (float)(j + 0.5) * ConstantsRes.GRID_SIZE;
+                Vector3 origin = new Vector3(x, 1000, z);
+                Vector3 direction = new Vector3(0.0f, -1.0f, 0.0f);
+                Ray ray = new Ray(origin, direction);
+                if (Physics.Raycast(ray, out hitInfo, 1500.0f, groundLayer))
+                //if (Mathf.Abs((origin.x - 150) * Constants.GRID_SIZE) < 20 && Mathf.Abs((origin.z - 160) * Constants.GRID_SIZE) < 20)
+                //if ((-origin.z) > 100)
+                //if (Mathf.Abs(origin.x - 159) < 20 && Mathf.Abs(-origin.z- 171) < 20)
+                {
+                    count_can_walk++;
+                    if (Mathf.Abs(origin.x - 149) < 0.7 && Mathf.Abs(-origin.z - 147) < 0.7)
+                    {
+                        Debug.Log("point " + origin.x + "  " + origin.x + "can pass");
+                    }
+                    bw.Write((byte)0);
+                }
+                else
+                {
+                    if (Mathf.Abs(origin.x - 149) < 0.7 && Mathf.Abs(-origin.z - 147) < 0.7)
+                    {
+                        Debug.Log("point " + origin.x + "  " + origin.x + "can not pass");
+                    }
+                    bw.Write((byte)1);
+                }
+
+                bw.Write((byte)0);
+                count_total_point++;
+            }
+        }
+
+
+
+
+        bw.Close();
+        fs.Close();
+        curMapData["mapTileId"] = tileName;
+        DataRow row = tileData.NewRow();
+ 
+        row["resid"] = mapresid;
+        row["mapTileId"] = tileName;
+        tileData.Rows.Add(row);
+        Debug.Log("tiledata row:" + tileData.Rows.Count);
+        EditorData.mapTileId = tileName;
+        ExcelHelper.AddRow(mapFileName, "Sheet2", row);
+        Repaint();
+        Debug.Log("count_can_walk count_total_point" + count_can_walk + "  " + count_total_point);
+
+    }
+
+   
+}
+
+
